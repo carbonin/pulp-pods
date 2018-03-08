@@ -1,0 +1,6 @@
+#!/bin/bash
+
+oc delete all -l app=pulp
+oc get pvc -o name |xargs oc delete
+oc delete secret -l app=pulp
+oc delete serviceaccount anyuid

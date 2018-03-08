@@ -1,0 +1,316 @@
+apiVersion: v1
+kind: Template
+labels:
+  template: pulp
+metadata:
+  name: pulp
+  annotations:
+    description: Pulp application
+    tags: instant-app,pulp
+objects:
+- apiVersion: v1
+  kind: Secret
+  metadata:
+    name: mongo-secrets
+  stringData:
+    mongo-password: "${MONGODB_PASSWORD}"
+    mongo-admin-password: "${MONGODB_ADMIN_PASSWORD}"
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: pulp-data
+  spec:
+    accessModes:
+    - ReadWriteOnce
+    resources:
+      requests:
+        storage: 10G
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: mongodb-data
+  spec:
+    accessModes:
+    - ReadWriteOnce
+    resources:
+      requests:
+        storage: 10G
+- apiVersion: v1
+  kind: ServiceAccount
+  metadata:
+    name: anyuid
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: mongodb
+  spec:
+    ports:
+    - name: mongodb
+      port: 27017
+    selector:
+      name: mongodb
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: pulp
+  spec:
+    ports:
+    - name: pulp
+      port: 443
+    selector:
+      name: pulp
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: qpid
+  spec:
+    ports:
+    - name: qpid
+      port: 5672
+    selector:
+      name: qpid
+- apiVersion: v1
+  kind: DeploymentConfig
+  metadata:
+    name: mongodb
+  spec:
+    replicas: 1
+    selector:
+      name: mongodb
+    strategy:
+      type: Rolling
+    template:
+      metadata:
+        name: mongodb
+        labels:
+          name: mongodb
+      spec:
+        containers:
+        - name: mongodb
+          args:
+          - run-mongod
+          env:
+          - name: MONGODB_USER
+            value: "${MONGODB_USER}"
+          - name: MONGODB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: mongo-secrets
+                key: mongo-password
+          - name: MONGODB_DATABASE
+            value: "${MONGODB_DATABASE}"
+          - name: MONGODB_ADMIN_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: mongo-secrets
+                key: mongo-admin-password
+          image: carbonin/foreman-mongodb:latest
+          volumeMounts:
+          - mountPath: /var/lib/mongodb/data
+            name: mongodb-data
+        volumes:
+        - name: mongodb-data
+          persistentVolumeClaim:
+            claimName: mongodb-data
+    triggers:
+    - type: ConfigChange
+- apiVersion: v1
+  kind: DeploymentConfig
+  metadata:
+    name: pulp
+  spec:
+    replicas: 1
+    selector:
+      name: pulp
+    strategy:
+      type: Rolling
+    template:
+      metadata:
+        name: pulp
+        labels:
+          name: pulp
+      spec:
+        containers:
+        - name: pulp
+          args:
+          - /usr/bin/start_httpd.sh
+          command:
+          - /usr/bin/entrypoint.sh
+          image: carbonin/foreman-pulp:latest
+          volumeMounts:
+          - mountPath: /etc/pki/pulp/private
+            name: keys
+            readOnly: true
+          - mountPath: /etc/pki/pulp/certs
+            name: certs
+            readOnly: true
+        volumes:
+        - name: keys
+          secret:
+            defaultMode: 420
+            items:
+            - key: pulp.key
+              path: pulp.key
+            secretName: keys
+        - name: certs
+          secret:
+            defaultMode: 420
+            items:
+            - key: ca.crt
+              path: ca.crt
+            - key: pulp.crt
+              path: pulp.crt
+            secretName: certs
+        serviceAccount: anyuid
+        serviceAccountName: anyuid
+    triggers:
+    - type: ConfigChange
+- apiVersion: v1
+  kind: DeploymentConfig
+  metadata:
+    name: pulp-celerybeat
+  spec:
+    replicas: 1
+    selector:
+      name: pulp-celerybeat
+    strategy:
+      type: Rolling
+    template:
+      metadata:
+        name: pulp-celerybeat
+        labels:
+          name: pulp-celerybeat
+      spec:
+        containers:
+        - command:
+          - /usr/bin/entrypoint.sh
+          image: carbonin/foreman-pulp-celerybeat:latest
+          name: pulp-celerybeat
+        serviceAccount: anyuid
+        serviceAccountName: anyuid
+    triggers:
+    - type: ConfigChange
+- apiVersion: v1
+  kind: DeploymentConfig
+  metadata:
+    name: pulp-resource-manager
+  spec:
+    replicas: 1
+    selector:
+      name: pulp-resource-manager
+    strategy:
+      type: Rolling
+    template:
+      metadata:
+        name: pulp-resource-manager
+        labels:
+          name: pulp-resource-manager
+      spec:
+        containers:
+        - command:
+          - /usr/bin/entrypoint.sh
+          image: carbonin/foreman-pulp-resource-manager:latest
+          name: pulp-resource-manager
+        serviceAccount: anyuid
+        serviceAccountName: anyuid
+    triggers:
+    - type: ConfigChange
+- apiVersion: v1
+  kind: DeploymentConfig
+  metadata:
+    name: pulp-worker
+  spec:
+    replicas: 4
+    selector:
+      name: pulp-worker
+    strategy:
+      type: Rolling
+    template:
+      metadata:
+        name: pulp-worker
+        labels:
+          name: pulp-worker
+      spec:
+        containers:
+        - command:
+          - /usr/bin/entrypoint.sh
+          image: carbonin/foreman-pulp-worker:latest
+          name: pulp-worker
+          volumeMounts:
+          - mountPath: /var/lib/pulp
+            name: pulp-data
+#          - mountPath: /etc/puppet
+#            name: puppet-data
+        volumes:
+        - name: pulp-data
+          persistentVolumeClaim:
+            claimName: pulp-data
+#        - name: puppet-data
+#          persistentVolumeClaim:
+#            claimName: puppet-data
+        serviceAccount: anyuid
+        serviceAccountName: anyuid
+    triggers:
+    - type: ConfigChange
+- apiVersion: v1
+  kind: DeploymentConfig
+  metadata:
+    name: qpid
+  spec:
+    replicas: 1
+    selector:
+      name: qpid
+    strategy:
+      type: Rolling
+    template:
+      metadata:
+        name: qpid
+        labels:
+          name: qpid
+      spec:
+        containers:
+        - args:
+          - /usr/bin/startup.sh
+          image: carbonin/foreman-qpid:latest
+          name: qpid
+        serviceAccount: anyuid
+        serviceAccountName: anyuid
+    triggers:
+    - type: ConfigChange
+- apiVersion: v1
+  kind: Route
+  metadata:
+    name: pulp
+  spec:
+    port:
+      targetPort: pulp
+    tls:
+      termination: passthrough
+    to:
+      kind: Service
+      name: pulp
+parameters:
+- name: MONGODB_USER
+  displayName: MongoDB username
+  required: true
+  description: MongoDB username
+  value: admin
+- name: MONGODB_PASSWORD
+  displayName: MongoDB password
+  required: true
+  description: MongoDB password
+  value: admin
+#  from: "[a-zA-Z0-9]{16}"
+#  generate: expression
+- name: MONGODB_DATABASE
+  displayName: MongoDB database name
+  required: true
+  description: MongoDB database name
+  value: pulp_database
+- name: MONGODB_ADMIN_PASSWORD
+  displayName: MongoDB admin password
+  required: true
+  description: MongoDB admin password
+  value: admin
+#  from: "[a-zA-Z0-9]{16}"
+#  generate: expression
